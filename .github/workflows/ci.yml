@@ -50,13 +50,10 @@ jobs:
         run: |
           echo DOCKER_USER=$(id -u):$(id -g) >> $GITHUB_ENV
 
-      - name: Create Homeserver Configuration For Synapse
-        run: just gen_synapse_conf
-
-      - name: Use Test Homeserver
+      - name: Use Test Homeserver Configuration
         run: |
+          just dotenv
           cp ./crates/test/fixtures/synapse/* ./docker/synapse
-          cat ./docker/synapse/homeserver.yaml
 
       - name: Build Docker Containers
         run: |

@@ -4,27 +4,58 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
+use serde::Serialize;
 use tokio::net::TcpListener;
 
 pub mod api;
 
+#[derive(Serialize)]
+pub struct EmptyBody {}
+
 pub async fn routes() -> Router {
     let router = Router::new()
-        .route("/register", post(api::relative::register::handler))
-        .route(
-            "/register/available/:username",
-            get(api::relative::available::handler),
-        )
         .route("/login", post(api::relative::login::handler))
         .route("/logout", post(api::relative::logout::handler))
+        .nest(
+            "/register",
+            Router::new()
+                .route("/", post(api::register::root::handler))
+                .route(
+                    "/available/:username",
+                    get(api::register::available::handler),
+                )
+                .route("/email/:email", get(api::register::email::handler)),
+        )
         .nest(
             "/account",
             Router::new()
                 .route("/whoami", get(api::account::whoami::handler))
                 .route("/password", put(api::account::password::handler))
-                .route("/display_name", put(api::account::display_name::handler))
-                .route("/avatar", put(api::account::avatar::handler)),
-        );
+        )
+        .nest(
+            "/profile",
+            Router::new()
+                .route("/:user_id", get(api::profile::handler))
+                .route("/displayname", put(api::profile::displayname::handler))
+                .route("/avatar_url", put(api::profile::avatar_url::handler)),
+        )
+        .nest(
+            "/direct",
+            Router::new().route("/", post(api::direct::create::handler)),
+        )
+        .nest(
+            "/spaces",
+            Router::new()
+                .route("/", post(api::spaces::create::handler))
+                .route(
+                    "/:space_id/channels",
+                    post(api::spaces::channels::create::handler),
+                ),
+        )
+        // .nest("/join",
+        //       Router::new().route("/join/:space_id", put(api::membership::join)),
+        // )
+        ;
 
     Router::new().nest("/_commune/client/r0", router)
 }

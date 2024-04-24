@@ -51,7 +51,6 @@ impl Env {
         format!("http://{}{}", self.loopback, path)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn get(&self, url: &str) -> reqwest::RequestBuilder {
         tracing::info!("GET {}", self.path(url));
 
@@ -62,5 +61,11 @@ impl Env {
         tracing::info!("POST {}", self.path(url));
 
         self.client.post(self.path(url))
+    }
+
+    pub(crate) fn put(&self, url: &str) -> reqwest::RequestBuilder {
+        tracing::info!("PUT {}", self.path(url));
+
+        self.client.put(self.path(url))
     }
 }

@@ -1,19 +1,12 @@
 use commune::util::secret::Secret;
-use rand::seq::IteratorRandom;
 
-use matrix::client::register::root::*;
-use router::api::relative::register;
+use matrix::client::register::root::Response;
+use router::api::register::root as register;
 
-use crate::env::Env;
+use crate::{env::Env, util::generate_comforming_localpart};
 
 pub async fn register(client: &Env) -> Result<Response, reqwest::Error> {
-    let allowed = ('0'..='9')
-        .chain('a'..='z')
-        .chain(['-', '.', '=', '_', '/', '+']);
-    let username = allowed
-        .choose_multiple(&mut rand::thread_rng(), 8)
-        .into_iter()
-        .collect();
+    let username = generate_comforming_localpart();
 
     tracing::info!(?username);
 
@@ -22,12 +15,12 @@ pub async fn register(client: &Env) -> Result<Response, reqwest::Error> {
         .json(&register::Payload {
             username,
             password: Secret::new("verysecure"),
+            registration_token: None,
         })
         .send()
-        .await
-        .unwrap();
+        .await?;
 
-    resp.json::<Response>().await
+    resp.json().await
 }
 
 #[tokio::test]

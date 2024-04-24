@@ -1,12 +1,22 @@
-//! Module for [User-Interactive Authentication API][uiaa] types.
+//! Module for [User-Interactive Authentication AjI][uiaa] types.
 //!
 //! [uiaa]: https://spec.matrix.org/latest/client-server-api/#user-interactive-authentication-api
 
-use ruma_common::{thirdparty::Medium, OwnedSessionId, OwnedUserId, UserId};
+use std::fmt;
+
+use bytes::BufMut;
+use ruma_common::{
+    api::{error::IntoHttpError, EndpointError, OutgoingResponse},
+    thirdparty::Medium,
+    OwnedSessionId, OwnedUserId, UserId,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::from_slice as from_json_slice;
+
+use crate::error::StandardErrorBody;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct UiaaResponse {
+pub struct UiaaInfo {
     pub flows: Vec<AuthFlow>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -16,12 +26,12 @@ pub struct UiaaResponse {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<OwnedSessionId>,
-    // #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    // pub auth_error: Option<StandardErrorBod>,
+
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub auth_error: Option<StandardErrorBody>,
 }
 
-/// Ordered list of stages required to complete authentication.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct AuthFlow {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stages: Vec<AuthType>,
@@ -33,35 +43,27 @@ impl AuthFlow {
     }
 }
 
-/// Information for one authentication stage.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[non_exhaustive]
 pub enum AuthType {
-    /// Password-based authentication (`m.login.password`).
     #[serde(rename = "m.login.password")]
     Password,
 
-    /// Google ReCaptcha 2.0 authentication (`m.login.recaptcha`).
     #[serde(rename = "m.login.recaptcha")]
     ReCaptcha,
 
-    /// Email-based authentication (`m.login.email.identity`).
     #[serde(rename = "m.login.email.identity")]
     EmailIdentity,
 
-    /// Phone number-based authentication (`m.login.msisdn`).
     #[serde(rename = "m.login.msisdn")]
     Msisdn,
 
-    /// SSO-based authentication (`m.login.sso`).
     #[serde(rename = "m.login.sso")]
     Sso,
 
-    /// Dummy authentication (`m.login.dummy`).
     #[serde(rename = "m.login.dummy")]
     Dummy,
 
-    /// Registration token-based authentication (`m.login.registration_token`).
     #[serde(rename = "m.login.registration_token")]
     RegistrationToken,
 }
@@ -84,9 +86,9 @@ pub enum AuthData {
 
     // Dummy authentication (`m.login.dummy`).
     Dummy(Dummy),
-    // Registration token-based authentication (`m.login.registration_token`).
-    // RegistrationToken(RegistrationToken),
 
+    // Registration token-based authentication (`m.login.registration_token`).
+    RegistrationToken(RegistrationToken),
     // Fallback acknowledgement.
     // FallbackAcknowledgement(FallbackAcknowledgement),
 }
@@ -96,6 +98,7 @@ impl AuthData {
         match self {
             AuthData::Password(_) => AuthType::Password,
             AuthData::Dummy(_) => AuthType::Dummy,
+            AuthData::RegistrationToken(_) => AuthType::RegistrationToken,
         }
     }
 }
@@ -118,7 +121,7 @@ pub struct Password {
 }
 
 impl Password {
-    pub fn new<S: Into<String>>(user_id: impl Into<OwnedUserId>, password: S) -> Self {
+    pub fn new(user_id: impl Into<OwnedUserId>, password: impl Into<String>) -> Self {
         let user: &UserId = &user_id.into();
 
         Self {
@@ -130,8 +133,23 @@ impl Password {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename = "m.login.registration_token")]
+pub struct RegistrationToken {
+    token: String,
+}
+
+impl RegistrationToken {
+    pub fn new(token: impl Into<String>) -> Self {
+        Self {
+            token: token.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Auth {
+    #[serde(skip_serializing_if = "Option::is_none")]
     session: Option<OwnedSessionId>,
 
     kind: AuthType,
@@ -161,4 +179,56 @@ pub enum UserIdentifier {
 
     #[serde(rename = "m.id.phone")]
     Phone { country: String, phone: String },
+}
+
+#[derive(Clone, Debug)]
+#[allow(clippy::exhaustive_enums)]
+pub enum UiaaResponse {
+    Auth(UiaaInfo),
+
+    Error(crate::Error),
+}
+
+impl From<crate::Error> for UiaaResponse {
+    fn from(error: crate::Error) -> Self {
+        Self::Error(error)
+    }
+}
+
+impl fmt::Display for UiaaResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Auth(_) => write!(f, "User-Interactive Authentication required."),
+            Self::Error(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl EndpointError for UiaaResponse {
+    fn from_http_response<T: AsRef<[u8]>>(response: http::Response<T>) -> Self {
+        if response.status() == http::StatusCode::UNAUTHORIZED {
+            if let Ok(uiaa_info) = from_json_slice(response.body().as_ref()) {
+                return Self::Auth(uiaa_info);
+            }
+        }
+
+        Self::Error(crate::Error::from_http_response(response))
+    }
+}
+
+impl std::error::Error for UiaaResponse {}
+
+impl OutgoingResponse for UiaaResponse {
+    fn try_into_http_response<T: Default + BufMut>(
+        self,
+    ) -> Result<http::Response<T>, IntoHttpError> {
+        match self {
+            UiaaResponse::Auth(authentication_info) => http::Response::builder()
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .status(&http::StatusCode::UNAUTHORIZED)
+                .body(ruma_common::serde::json_to_buf(&authentication_info)?)
+                .map_err(Into::into),
+            UiaaResponse::Error(error) => error.try_into_http_response(),
+        }
+    }
 }
